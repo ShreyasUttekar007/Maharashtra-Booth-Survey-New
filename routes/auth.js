@@ -2,6 +2,7 @@ const express = require("express");
 const jwt = require("jsonwebtoken");
 const config = require("../config");
 const User = require("../models/User");
+const Booth = require("../models/BoothMapping");
 const Survey = require("../models/BoothData");
 const Survey2 = require("../models/Pramukh");
 const Survey3 = require("../models/InfluentialLeaders");
@@ -84,7 +85,6 @@ router.post("/login", async (req, res, next) => {
   }
 });
 
-
 function authenticateToken(req, res, next) {
   const token = req.headers["authorization"];
 
@@ -94,18 +94,267 @@ function authenticateToken(req, res, next) {
       .json({ message: "Unauthorized: Token not provided" });
   }
 
-  jwt.verify(token.replace("Bearer ", ""), config.jwtSecret, (err, decodedToken) => {
-    if (err) {
-      return res.status(403).json({ message: "Forbidden: Invalid token" });
+  jwt.verify(
+    token.replace("Bearer ", ""),
+    config.jwtSecret,
+    (err, decodedToken) => {
+      if (err) {
+        return res.status(403).json({ message: "Forbidden: Invalid token" });
+      }
+
+      req.user = {
+        userId: decodedToken.userId,
+        roles: decodedToken.roles,
+      };
+      next();
+    }
+  );
+}
+
+router.post("/create-booth", authenticateToken, async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const boothData = { ...req.body, userId: userId };
+
+    const booth = new Booth(boothData);
+    const savedBooth = await booth.save();
+
+    res
+      .status(201)
+      .json({ message: "Survey saved successfully", booth: savedBooth });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/district-names", authenticateToken, async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+
+    const user = await User.findById(userId);
+    const districts = user.districts; 
+
+    res.status(200).json({ districts });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/get-districts-with-count", authenticateToken, async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+
+    // Assuming you have a model named Booth for booths
+    const districts = await Booth.aggregate([
+      { $match: { userId: userId } },
+      { $group: { _id: "$district", count: { $sum: 1 } } },
+      { $project: { _id: 1, count: 1 } }
+    ]);
+
+    const totalDistricts = districts.length;
+    const totalCount = districts.reduce((total, district) => total + district.count, 0);
+
+    res.status(200).json({ districts, totalDistricts, totalCount });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+
+router.get("/booth-count-by-district", async (req, res, next) => {
+  try {
+    const boothCountsByDistrict = await Booth.aggregate([
+      {
+        $group: {
+          _id: "$district",
+          totalBooths: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const totalDistricts = boothCountsByDistrict.length;
+    const totalBoothsInAllDistricts = boothCountsByDistrict.reduce(
+      (total, district) => total + district.totalBooths,
+      0
+    );
+
+    boothCountsByDistrict.push({
+      _id: "Total",
+      totalDistricts,
+      totalBoothsInAllDistricts,
+    });
+
+    res.status(200).json({ boothCountsByDistrict });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+router.get("/combined-counts", async (req, res, next) => {
+  try {
+    const boothCountsByDistrict = await Booth.aggregate([
+      {
+        $group: {
+          _id: "$district",
+          totalBooths: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const surveyCountsByDistrict = await Survey.aggregate([
+      {
+        $group: {
+          _id: "$district",
+          completedBooths: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const districtData = boothCountsByDistrict.map((boothDistrict) => {
+      const surveyDistrict = surveyCountsByDistrict.find(
+        (s) => s._id === boothDistrict._id
+      );
+
+      return {
+        _id: boothDistrict._id,
+        totalBooths: boothDistrict.totalBooths,
+        completedBooths: surveyDistrict ? surveyDistrict.completedBooths : 0,
+      };
+    });
+
+    // Calculate totals
+    const totalDistricts = districtData.length;
+    const totalBooths = districtData.reduce(
+      (total, district) => total + district.totalBooths,
+      0
+    );
+    const totalCompletedBooths = districtData.reduce(
+      (total, district) => total + district.completedBooths,
+      0
+    );
+
+    // Add totals to the response
+    const combinedCounts = {
+      districtData,
+      totals: {
+        totalDistricts,
+        totalBooths,
+        totalCompletedBooths,
+      },
+    };
+
+    res.status(200).json(combinedCounts);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/combined-counts-by-constituency/:district", async (req, res, next) => {
+  try {
+    const { district } = req.params;
+
+    if (!district) {
+      return res.status(400).json({ error: "District parameter is required" });
     }
 
-    req.user = {
-      userId: decodedToken.userId,
-      roles: decodedToken.roles,  
+    const boothCountsByConstituency = await Booth.aggregate([
+      {
+        $match: { district: district },
+      },
+      {
+        $group: {
+          _id: "$constituencyName",
+          totalBooths: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const surveyCountsByConstituency = await Survey.aggregate([
+      {
+        $match: { district: district },
+      },
+      {
+        $group: {
+          _id: "$constituencyName",
+          completedBooths: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const constituencyData = boothCountsByConstituency.map(
+      (boothConstituency) => {
+        const surveyConstituency = surveyCountsByConstituency.find(
+          (s) => s._id === boothConstituency._id
+        );
+
+        return {
+          _id: boothConstituency._id,
+          totalBooths: boothConstituency.totalBooths,
+          completedBooths: surveyConstituency
+            ? surveyConstituency.completedBooths
+            : 0,
+        };
+      }
+    );
+
+    const totalConstituencies = constituencyData.length;
+    const totalBooths = constituencyData.reduce(
+      (total, constituency) => total + constituency.totalBooths,
+      0
+    );
+    const totalCompletedBooths = constituencyData.reduce(
+      (total, constituency) => total + constituency.completedBooths,
+      0
+    );
+
+    const combinedCounts = {
+      constituencyData,
+      totals: {
+        totalConstituencies,
+        totalBooths,
+        totalCompletedBooths,
+      },
     };
-    next();
-  });
-}
+
+    res.status(200).json(combinedCounts);
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+
+router.get("/survey-count-by-district", async (req, res, next) => {
+  try {
+    const boothCountsByDistrict = await Survey.aggregate([
+      {
+        $group: {
+          _id: "$district",
+          totalBooths: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const totalDistricts = boothCountsByDistrict.length;
+    const totalBoothsInAllDistricts = boothCountsByDistrict.reduce(
+      (total, district) => total + district.totalBooths,
+      0
+    );
+
+    boothCountsByDistrict.push({
+      _id: "Total",
+      totalDistricts,
+      totalBoothsInAllDistricts,
+    });
+
+    res.status(200).json({ boothCountsByDistrict });
+  } catch (error) {
+    next(error);
+  }
+});
+
 
 
 
@@ -246,48 +495,70 @@ router.get("/get-survey", authenticateToken, async (req, res, next) => {
   }
 });
 
-router.get("/get-survey-by-booth/:booth", authenticateToken, async (req, res, next) => {
-  try {
-    const userRoles = req.user?.roles || [];
-    console.log('userRoles::: ', userRoles);
+router.get(
+  "/get-survey-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
 
-    if (userRoles.includes('admin') || userRoles.includes('mod') || userRoles.includes('user')) {
-      const urbanSurveyData = await UrbanSurvey.find({ Booth: req.params.booth });
-      const ruralSurveyData = await RuralSurvey.find({ Booth: req.params.booth });
-
-      const surveyData = urbanSurveyData.concat(ruralSurveyData);
-
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length === 1 && userRoles[0] !== 'user') {
-      const urbanSurveyData = await UrbanSurvey.find({ Booth: req.params.booth, district: userRoles[0] });
-      const ruralSurveyData = await RuralSurvey.find({ Booth: req.params.booth, district: userRoles[0] });
-
-      const surveyData = urbanSurveyData.concat(ruralSurveyData);
-
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length > 0) {
-      const booth = req.params.booth;
-      const districtData = [];
-
-      for (const district of userRoles) {
-        const urbanSurveyData = await UrbanSurvey.find({ Booth: booth, district: district });
-        const ruralSurveyData = await RuralSurvey.find({ Booth: booth, district: district });
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const urbanSurveyData = await UrbanSurvey.find({
+          Booth: req.params.booth,
+        });
+        const ruralSurveyData = await RuralSurvey.find({
+          Booth: req.params.booth,
+        });
 
         const surveyData = urbanSurveyData.concat(ruralSurveyData);
 
-        districtData.push({ district, surveys: surveyData });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const urbanSurveyData = await UrbanSurvey.find({
+          Booth: req.params.booth,
+          district: userRoles[0],
+        });
+        const ruralSurveyData = await RuralSurvey.find({
+          Booth: req.params.booth,
+          district: userRoles[0],
+        });
+
+        const surveyData = urbanSurveyData.concat(ruralSurveyData);
+
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
+
+        for (const district of userRoles) {
+          const urbanSurveyData = await UrbanSurvey.find({
+            Booth: booth,
+            district: district,
+          });
+          const ruralSurveyData = await RuralSurvey.find({
+            Booth: booth,
+            district: district,
+          });
+
+          const surveyData = urbanSurveyData.concat(ruralSurveyData);
+
+          districtData.push({ district, surveys: surveyData });
+        }
+
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
       }
-
-      res.status(200).json({ districts: districtData });
-    } else {
-      res.status(403).json({ error: "User roles not available" });
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
-
-
+);
 
 router.get("/get-survey/:userId", authenticateToken, async (req, res, next) => {
   try {
@@ -330,15 +601,19 @@ router.get("/get-all-surveys", authenticateToken, async (req, res, next) => {
   }
 });
 
-router.get("/get-unique-districts", authenticateToken, async (req, res, next) => {
-  try {
-    const uniqueDistricts = await Survey.distinct('district');
+router.get(
+  "/get-unique-districts",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const uniqueDistricts = await Survey.distinct("district");
 
-    res.status(200).json({ uniqueDistricts: uniqueDistricts });
-  } catch (error) {
-    next(error);
+      res.status(200).json({ uniqueDistricts: uniqueDistricts });
+    } catch (error) {
+      next(error);
+    }
   }
-});
+);
 
 router.get("/survey/count", authenticateToken, async (req, res, next) => {
   try {
@@ -384,46 +659,60 @@ router.get(
 //   }
 // );
 
-router.get("/get-surveys-by-booth/:booth", authenticateToken, async (req, res, next) => {
-  try {
-    const userRoles = req.user?.roles || [];
-    const booth = req.params.booth;
-    console.log('userRoles::: ', userRoles);
+router.get(
+  "/get-surveys-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      const booth = req.params.booth;
+      console.log("userRoles::: ", userRoles);
 
-    if (userRoles.includes('admin') || userRoles.includes('mod') || userRoles.includes('user')) {
-      const surveyData = await Survey.find({ Booth: booth });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length === 1 && userRoles[0] !== 'user') {
-      const surveyData = await Survey.find({ Booth: booth, district: userRoles[0] });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length > 0) {
-      const districtData = [];
-      let boothDistrict;
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await Survey.find({ Booth: booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await Survey.find({
+          Booth: booth,
+          district: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const districtData = [];
+        let boothDistrict;
 
-      for (const district of userRoles) {
-        const surveyData = await Survey.find({ Booth: booth, district: district });
-        const districtInfo = { district, surveys: surveyData };
-        districtData.push(districtInfo);
+        for (const district of userRoles) {
+          const surveyData = await Survey.find({
+            Booth: booth,
+            district: district,
+          });
+          const districtInfo = { district, surveys: surveyData };
+          districtData.push(districtInfo);
 
-        if (district === booth) {
-          boothDistrict = districtInfo;
+          if (district === booth) {
+            boothDistrict = districtInfo;
+          }
         }
-      }
 
-      if (boothDistrict) {
-        districtData.sort((a, b) => (a.district === booth ? -1 : b.district === booth ? 1 : 0));
-      }
+        if (boothDistrict) {
+          districtData.sort((a, b) =>
+            a.district === booth ? -1 : b.district === booth ? 1 : 0
+          );
+        }
 
-      res.status(200).json({ districts: districtData });
-    } else {
-      res.status(403).json({ error: "User roles not available" });
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
+      }
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
-
-
+);
 
 router.put(
   "/update-survey/:surveyId",
@@ -511,34 +800,48 @@ router.get(
   }
 );
 
-router.get("/get-survey2-by-booth/:booth", authenticateToken, async (req, res, next) => {
-  try {
-    const userRoles = req.user?.roles || [];
-    console.log('userRoles::: ', userRoles);
+router.get(
+  "/get-survey2-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
 
-    if (userRoles.includes('admin') || userRoles.includes('mod') || userRoles.includes('user')) {
-      const surveyData = await Survey2.find({ Booth: req.params.booth });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length === 1 && userRoles[0] !== 'user') {
-      const surveyData = await Survey2.find({ Booth: req.params.booth, district: userRoles[0] });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length > 0) {
-      const booth = req.params.booth;
-      const districtData = [];
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await Survey2.find({ Booth: req.params.booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await Survey2.find({
+          Booth: req.params.booth,
+          district: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
 
-      for (const district of userRoles) {
-        const surveyData = await Survey2.find({ Booth: booth, district: district });
-        districtData.push({ district, surveys: surveyData });
+        for (const district of userRoles) {
+          const surveyData = await Survey2.find({
+            Booth: booth,
+            district: district,
+          });
+          districtData.push({ district, surveys: surveyData });
+        }
+
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
       }
-
-      res.status(200).json({ districts: districtData });
-    } else {
-      res.status(403).json({ error: "User roles not available" });
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 router.get(
   "/get-all-the-survey2",
@@ -700,34 +1003,48 @@ router.get(
   }
 );
 
-router.get("/get-survey3-by-booth/:booth", authenticateToken, async (req, res, next) => {
-  try {
-    const userRoles = req.user?.roles || [];
-    console.log('userRoles::: ', userRoles);
+router.get(
+  "/get-survey3-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
 
-    if (userRoles.includes('admin') || userRoles.includes('mod') || userRoles.includes('user')) {
-      const surveyData = await Survey3.find({ Booth: req.params.booth });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length === 1 && userRoles[0] !== 'user') {
-      const surveyData = await Survey3.find({ Booth: req.params.booth, district: userRoles[0] });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length > 0) {
-      const booth = req.params.booth;
-      const districtData = [];
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await Survey3.find({ Booth: req.params.booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await Survey3.find({
+          Booth: req.params.booth,
+          district: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
 
-      for (const district of userRoles) {
-        const surveyData = await Survey3.find({ Booth: booth, district: district });
-        districtData.push({ district, surveys: surveyData });
+        for (const district of userRoles) {
+          const surveyData = await Survey3.find({
+            Booth: booth,
+            district: district,
+          });
+          districtData.push({ district, surveys: surveyData });
+        }
+
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
       }
-
-      res.status(200).json({ districts: districtData });
-    } else {
-      res.status(403).json({ error: "User roles not available" });
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 router.put(
   "/update-by-the-survey3/:surveyId",
@@ -859,34 +1176,48 @@ router.get(
   }
 );
 
-router.get("/get-survey4-by-booth/:booth", authenticateToken, async (req, res, next) => {
-  try {
-    const userRoles = req.user?.roles || [];
-    console.log('userRoles::: ', userRoles);
+router.get(
+  "/get-survey4-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
 
-    if (userRoles.includes('admin') || userRoles.includes('mod') || userRoles.includes('user')) {
-      const surveyData = await Survey4.find({ Booth: req.params.booth });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length === 1 && userRoles[0] !== 'user') {
-      const surveyData = await Survey4.find({ Booth: req.params.booth, district: userRoles[0] });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length > 0) {
-      const booth = req.params.booth;
-      const districtData = [];
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await Survey4.find({ Booth: req.params.booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await Survey4.find({
+          Booth: req.params.booth,
+          district: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
 
-      for (const district of userRoles) {
-        const surveyData = await Survey4.find({ Booth: booth, district: district });
-        districtData.push({ district, surveys: surveyData });
+        for (const district of userRoles) {
+          const surveyData = await Survey4.find({
+            Booth: booth,
+            district: district,
+          });
+          districtData.push({ district, surveys: surveyData });
+        }
+
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
       }
-
-      res.status(200).json({ districts: districtData });
-    } else {
-      res.status(403).json({ error: "User roles not available" });
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 router.put(
   "/update-by-the-survey4/:surveyId",
@@ -1018,34 +1349,48 @@ router.get(
   }
 );
 
-router.get("/get-survey5-by-booth/:booth", authenticateToken, async (req, res, next) => {
-  try {
-    const userRoles = req.user?.roles || [];
-    console.log('userRoles::: ', userRoles);
+router.get(
+  "/get-survey5-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
 
-    if (userRoles.includes('admin') || userRoles.includes('mod') || userRoles.includes('user')) {
-      const surveyData = await Survey5.find({ Booth: req.params.booth });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length === 1 && userRoles[0] !== 'user') {
-      const surveyData = await Survey5.find({ Booth: req.params.booth, district: userRoles[0] });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length > 0) {
-      const booth = req.params.booth;
-      const districtData = [];
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await Survey5.find({ Booth: req.params.booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await Survey5.find({
+          Booth: req.params.booth,
+          district: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
 
-      for (const district of userRoles) {
-        const surveyData = await Survey5.find({ Booth: booth, district: district });
-        districtData.push({ district, surveys: surveyData });
+        for (const district of userRoles) {
+          const surveyData = await Survey5.find({
+            Booth: booth,
+            district: district,
+          });
+          districtData.push({ district, surveys: surveyData });
+        }
+
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
       }
-
-      res.status(200).json({ districts: districtData });
-    } else {
-      res.status(403).json({ error: "User roles not available" });
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 router.put(
   "/update-by-the-survey5/:surveyId",
@@ -1177,34 +1522,48 @@ router.get(
   }
 );
 
-router.get("/get-survey6-by-booth/:booth", authenticateToken, async (req, res, next) => {
-  try {
-    const userRoles = req.user?.roles || [];
-    console.log('userRoles::: ', userRoles);
+router.get(
+  "/get-survey6-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
 
-    if (userRoles.includes('admin') || userRoles.includes('mod') || userRoles.includes('user')) {
-      const surveyData = await Survey6.find({ Booth: req.params.booth });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length === 1 && userRoles[0] !== 'user') {
-      const surveyData = await Survey6.find({ Booth: req.params.booth, district: userRoles[0] });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length > 0) {
-      const booth = req.params.booth;
-      const districtData = [];
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await Survey6.find({ Booth: req.params.booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await Survey6.find({
+          Booth: req.params.booth,
+          district: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
 
-      for (const district of userRoles) {
-        const surveyData = await Survey6.find({ Booth: booth, district: district });
-        districtData.push({ district, surveys: surveyData });
+        for (const district of userRoles) {
+          const surveyData = await Survey6.find({
+            Booth: booth,
+            district: district,
+          });
+          districtData.push({ district, surveys: surveyData });
+        }
+
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
       }
-
-      res.status(200).json({ districts: districtData });
-    } else {
-      res.status(403).json({ error: "User roles not available" });
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 router.put(
   "/update-by-the-survey6/:surveyId",
@@ -1309,34 +1668,48 @@ router.get(
   }
 );
 
-router.get("/get-survey7-by-booth/:booth", authenticateToken, async (req, res, next) => {
-  try {
-    const userRoles = req.user?.roles || [];
-    console.log('userRoles::: ', userRoles);
+router.get(
+  "/get-survey7-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
 
-    if (userRoles.includes('admin') || userRoles.includes('mod') || userRoles.includes('user')) {
-      const surveyData = await Survey7.find({ Booth: req.params.booth });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length === 1 && userRoles[0] !== 'user') {
-      const surveyData = await Survey7.find({ Booth: req.params.booth, district: userRoles[0] });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length > 0) {
-      const booth = req.params.booth;
-      const districtData = [];
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await Survey7.find({ Booth: req.params.booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await Survey7.find({
+          Booth: req.params.booth,
+          district: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
 
-      for (const district of userRoles) {
-        const surveyData = await Survey7.find({ Booth: booth, district: district });
-        districtData.push({ district, surveys: surveyData });
+        for (const district of userRoles) {
+          const surveyData = await Survey7.find({
+            Booth: booth,
+            district: district,
+          });
+          districtData.push({ district, surveys: surveyData });
+        }
+
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
       }
-
-      res.status(200).json({ districts: districtData });
-    } else {
-      res.status(403).json({ error: "User roles not available" });
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 router.put(
   "/update-by-the-survey7/:surveyId",
@@ -1441,34 +1814,48 @@ router.get(
   }
 );
 
-router.get("/get-survey8-by-booth/:booth", authenticateToken, async (req, res, next) => {
-  try {
-    const userRoles = req.user?.roles || [];
-    console.log('userRoles::: ', userRoles);
+router.get(
+  "/get-survey8-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
 
-    if (userRoles.includes('admin') || userRoles.includes('mod') || userRoles.includes('user')) {
-      const surveyData = await Survey8.find({ Booth: req.params.booth });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length === 1 && userRoles[0] !== 'user') {
-      const surveyData = await Survey8.find({ Booth: req.params.booth, district: userRoles[0] });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length > 0) {
-      const booth = req.params.booth;
-      const districtData = [];
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await Survey8.find({ Booth: req.params.booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await Survey8.find({
+          Booth: req.params.booth,
+          district: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
 
-      for (const district of userRoles) {
-        const surveyData = await Survey8.find({ Booth: booth, district: district });
-        districtData.push({ district, surveys: surveyData });
+        for (const district of userRoles) {
+          const surveyData = await Survey8.find({
+            Booth: booth,
+            district: district,
+          });
+          districtData.push({ district, surveys: surveyData });
+        }
+
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
       }
-
-      res.status(200).json({ districts: districtData });
-    } else {
-      res.status(403).json({ error: "User roles not available" });
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 router.put(
   "/update-by-the-survey8/:surveyId",
@@ -1573,34 +1960,48 @@ router.get(
   }
 );
 
-router.get("/get-survey9-by-booth/:booth", authenticateToken, async (req, res, next) => {
-  try {
-    const userRoles = req.user?.roles || [];
-    console.log('userRoles::: ', userRoles);
+router.get(
+  "/get-survey9-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
 
-    if (userRoles.includes('admin') || userRoles.includes('mod') || userRoles.includes('user')) {
-      const surveyData = await Survey9.find({ Booth: req.params.booth });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length === 1 && userRoles[0] !== 'user') {
-      const surveyData = await Survey9.find({ Booth: req.params.booth, district: userRoles[0] });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length > 0) {
-      const booth = req.params.booth;
-      const districtData = [];
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await Survey9.find({ Booth: req.params.booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await Survey9.find({
+          Booth: req.params.booth,
+          district: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
 
-      for (const district of userRoles) {
-        const surveyData = await Survey9.find({ Booth: booth, district: district });
-        districtData.push({ district, surveys: surveyData });
+        for (const district of userRoles) {
+          const surveyData = await Survey9.find({
+            Booth: booth,
+            district: district,
+          });
+          districtData.push({ district, surveys: surveyData });
+        }
+
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
       }
-
-      res.status(200).json({ districts: districtData });
-    } else {
-      res.status(403).json({ error: "User roles not available" });
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
+);
 router.put(
   "/update-by-the-survey9/:surveyId",
   authenticateToken,
@@ -1704,34 +2105,48 @@ router.get(
   }
 );
 
-router.get("/get-survey10-by-booth/:booth", authenticateToken, async (req, res, next) => {
-  try {
-    const userRoles = req.user?.roles || [];
-    console.log('userRoles::: ', userRoles);
+router.get(
+  "/get-survey10-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
 
-    if (userRoles.includes('admin') || userRoles.includes('mod') || userRoles.includes('user')) {
-      const surveyData = await Survey10.find({ Booth: req.params.booth });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length === 1 && userRoles[0] !== 'user') {
-      const surveyData = await Survey10.find({ Booth: req.params.booth, district: userRoles[0] });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length > 0) {
-      const booth = req.params.booth;
-      const districtData = [];
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await Survey10.find({ Booth: req.params.booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await Survey10.find({
+          Booth: req.params.booth,
+          district: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
 
-      for (const district of userRoles) {
-        const surveyData = await Survey10.find({ Booth: booth, district: district });
-        districtData.push({ district, surveys: surveyData });
+        for (const district of userRoles) {
+          const surveyData = await Survey10.find({
+            Booth: booth,
+            district: district,
+          });
+          districtData.push({ district, surveys: surveyData });
+        }
+
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
       }
-
-      res.status(200).json({ districts: districtData });
-    } else {
-      res.status(403).json({ error: "User roles not available" });
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 router.put(
   "/update-by-the-survey10/:surveyId",
@@ -1832,34 +2247,48 @@ router.get(
   }
 );
 
-router.get("/get-survey11-by-booth/:booth", authenticateToken, async (req, res, next) => {
-  try {
-    const userRoles = req.user?.roles || [];
-    console.log('userRoles::: ', userRoles);
+router.get(
+  "/get-survey11-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
 
-    if (userRoles.includes('admin') || userRoles.includes('mod') || userRoles.includes('user')) {
-      const surveyData = await Survey11.find({ Booth: req.params.booth });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length === 1 && userRoles[0] !== 'user') {
-      const surveyData = await Survey11.find({ Booth: req.params.booth, district: userRoles[0] });
-      res.status(200).json({ surveys: surveyData });
-    } else if (userRoles.length > 0) {
-      const booth = req.params.booth;
-      const districtData = [];
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await Survey11.find({ Booth: req.params.booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await Survey11.find({
+          Booth: req.params.booth,
+          district: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
 
-      for (const district of userRoles) {
-        const surveyData = await Survey11.find({ Booth: booth, district: district });
-        districtData.push({ district, surveys: surveyData });
+        for (const district of userRoles) {
+          const surveyData = await Survey11.find({
+            Booth: booth,
+            district: district,
+          });
+          districtData.push({ district, surveys: surveyData });
+        }
+
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
       }
-
-      res.status(200).json({ districts: districtData });
-    } else {
-      res.status(403).json({ error: "User roles not available" });
+    } catch (error) {
+      next(error);
     }
-  } catch (error) {
-    next(error);
   }
-});
+);
 
 router.put(
   "/update-by-the-survey11/:surveyId",
