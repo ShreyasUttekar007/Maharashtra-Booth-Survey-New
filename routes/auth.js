@@ -132,7 +132,7 @@ router.get("/district-names", authenticateToken, async (req, res, next) => {
     const userId = req.user.userId;
 
     const user = await User.findById(userId);
-    const districts = user.districts; 
+    const districts = user.districts;
 
     res.status(200).json({ districts });
   } catch (error) {
@@ -140,27 +140,88 @@ router.get("/district-names", authenticateToken, async (req, res, next) => {
   }
 });
 
-router.get("/get-districts-with-count", authenticateToken, async (req, res, next) => {
+router.get(
+  "/get-districts-with-count",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userId = req.user.userId;
+      const districts = await Booth.aggregate([
+        { $match: { userId: userId } },
+        { $group: { _id: "$district", count: { $sum: 1 } } },
+        { $project: { _id: 1, count: 1 } },
+      ]);
+
+      const totalDistricts = districts.length;
+      const totalCount = districts.reduce(
+        (total, district) => total + district.count,
+        0
+      );
+
+      res.status(200).json({ districts, totalDistricts, totalCount });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+router.get("/get-pcs-with-count", authenticateToken, async (req, res, next) => {
   try {
     const userId = req.user.userId;
-
-    // Assuming you have a model named Booth for booths
-    const districts = await Booth.aggregate([
+    const pcs = await Booth.aggregate([
       { $match: { userId: userId } },
-      { $group: { _id: "$district", count: { $sum: 1 } } },
-      { $project: { _id: 1, count: 1 } }
+      { $group: { _id: "$pc" } },
+      { $project: { _id: 1 } },
     ]);
 
-    const totalDistricts = districts.length;
-    const totalCount = districts.reduce((total, district) => total + district.count, 0);
+    const totalPcs = pcs.length;
 
-    res.status(200).json({ districts, totalDistricts, totalCount });
+    res.status(200).json({ pcs, totalPcs });
   } catch (error) {
     next(error);
   }
 });
 
+router.get("/get-acs-with-count", authenticateToken, async (req, res, next) => {
+  try {
+    const userId = req.user.userId;
+    const acs = await Booth.aggregate([
+      { $match: { userId: userId } },
+      { $group: { _id: "$constituencyName", count: { $sum: 1 } } },
+      { $project: { _id: 1, count: 1 } },
+    ]);
 
+    const totalAcs = acs.length;
+    const totalCount = acs.reduce((total, ac) => total + ac.count, 0);
+
+    res.status(200).json({ acs, totalAcs, totalCount });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get(
+  "/get-booth-with-count/:constituencyName",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userId = req.user.userId;
+      const constituencyName = req.params.constituencyName;
+
+      const booths = await Booth.aggregate([
+        { $match: { userId: userId, constituencyName: constituencyName } },
+        { $group: { _id: "$Booth" } },
+        { $project: { _id: 1 } },
+      ]);
+
+      const totalBooth = booths.length;
+
+      res.status(200).json({ booths, totalBooth });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 router.get("/booth-count-by-district", async (req, res, next) => {
   try {
@@ -190,7 +251,6 @@ router.get("/booth-count-by-district", async (req, res, next) => {
     next(error);
   }
 });
-
 
 router.get("/combined-counts", async (req, res, next) => {
   try {
@@ -235,7 +295,6 @@ router.get("/combined-counts", async (req, res, next) => {
       0
     );
 
-    // Add totals to the response
     const combinedCounts = {
       districtData,
       totals: {
@@ -251,80 +310,83 @@ router.get("/combined-counts", async (req, res, next) => {
   }
 });
 
-router.get("/combined-counts-by-constituency/:district", async (req, res, next) => {
-  try {
-    const { district } = req.params;
+router.get(
+  "/combined-counts-by-constituency/:district",
+  async (req, res, next) => {
+    try {
+      const { district } = req.params;
 
-    if (!district) {
-      return res.status(400).json({ error: "District parameter is required" });
-    }
-
-    const boothCountsByConstituency = await Booth.aggregate([
-      {
-        $match: { district: district },
-      },
-      {
-        $group: {
-          _id: "$constituencyName",
-          totalBooths: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const surveyCountsByConstituency = await Survey.aggregate([
-      {
-        $match: { district: district },
-      },
-      {
-        $group: {
-          _id: "$constituencyName",
-          completedBooths: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const constituencyData = boothCountsByConstituency.map(
-      (boothConstituency) => {
-        const surveyConstituency = surveyCountsByConstituency.find(
-          (s) => s._id === boothConstituency._id
-        );
-
-        return {
-          _id: boothConstituency._id,
-          totalBooths: boothConstituency.totalBooths,
-          completedBooths: surveyConstituency
-            ? surveyConstituency.completedBooths
-            : 0,
-        };
+      if (!district) {
+        return res
+          .status(400)
+          .json({ error: "District parameter is required" });
       }
-    );
 
-    const totalConstituencies = constituencyData.length;
-    const totalBooths = constituencyData.reduce(
-      (total, constituency) => total + constituency.totalBooths,
-      0
-    );
-    const totalCompletedBooths = constituencyData.reduce(
-      (total, constituency) => total + constituency.completedBooths,
-      0
-    );
+      const boothCountsByConstituency = await Booth.aggregate([
+        {
+          $match: { district: district },
+        },
+        {
+          $group: {
+            _id: "$constituencyName",
+            totalBooths: { $sum: 1 },
+          },
+        },
+      ]);
 
-    const combinedCounts = {
-      constituencyData,
-      totals: {
-        totalConstituencies,
-        totalBooths,
-        totalCompletedBooths,
-      },
-    };
+      const surveyCountsByConstituency = await Survey.aggregate([
+        {
+          $match: { district: district },
+        },
+        {
+          $group: {
+            _id: "$constituencyName",
+            completedBooths: { $sum: 1 },
+          },
+        },
+      ]);
 
-    res.status(200).json(combinedCounts);
-  } catch (error) {
-    next(error);
+      const constituencyData = boothCountsByConstituency.map(
+        (boothConstituency) => {
+          const surveyConstituency = surveyCountsByConstituency.find(
+            (s) => s._id === boothConstituency._id
+          );
+
+          return {
+            _id: boothConstituency._id,
+            totalBooths: boothConstituency.totalBooths,
+            completedBooths: surveyConstituency
+              ? surveyConstituency.completedBooths
+              : 0,
+          };
+        }
+      );
+
+      const totalConstituencies = constituencyData.length;
+      const totalBooths = constituencyData.reduce(
+        (total, constituency) => total + constituency.totalBooths,
+        0
+      );
+      const totalCompletedBooths = constituencyData.reduce(
+        (total, constituency) => total + constituency.completedBooths,
+        0
+      );
+
+      const combinedCounts = {
+        constituencyData,
+        totals: {
+          totalConstituencies,
+          totalBooths,
+          totalCompletedBooths,
+        },
+      };
+
+      res.status(200).json(combinedCounts);
+    } catch (error) {
+      next(error);
+    }
   }
-});
-
-
+);
 
 router.get("/survey-count-by-district", async (req, res, next) => {
   try {
@@ -354,9 +416,6 @@ router.get("/survey-count-by-district", async (req, res, next) => {
     next(error);
   }
 });
-
-
-
 
 router.post("/urban-survey", authenticateToken, async (req, res, next) => {
   try {
@@ -521,11 +580,11 @@ router.get(
       } else if (userRoles.length === 1 && userRoles[0] !== "user") {
         const urbanSurveyData = await UrbanSurvey.find({
           Booth: req.params.booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
         const ruralSurveyData = await RuralSurvey.find({
           Booth: req.params.booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
 
         const surveyData = urbanSurveyData.concat(ruralSurveyData);
@@ -535,19 +594,19 @@ router.get(
         const booth = req.params.booth;
         const districtData = [];
 
-        for (const district of userRoles) {
+        for (const pc of userRoles) {
           const urbanSurveyData = await UrbanSurvey.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
           const ruralSurveyData = await RuralSurvey.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
 
           const surveyData = urbanSurveyData.concat(ruralSurveyData);
 
-          districtData.push({ district, surveys: surveyData });
+          districtData.push({ pc, surveys: surveyData });
         }
 
         res.status(200).json({ districts: districtData });
@@ -678,29 +737,29 @@ router.get(
       } else if (userRoles.length === 1 && userRoles[0] !== "user") {
         const surveyData = await Survey.find({
           Booth: booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
         res.status(200).json({ surveys: surveyData });
       } else if (userRoles.length > 0) {
         const districtData = [];
         let boothDistrict;
 
-        for (const district of userRoles) {
+        for (const pc of userRoles) {
           const surveyData = await Survey.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
-          const districtInfo = { district, surveys: surveyData };
+          const districtInfo = { pc, surveys: surveyData };
           districtData.push(districtInfo);
 
-          if (district === booth) {
+          if (pc === booth) {
             boothDistrict = districtInfo;
           }
         }
 
         if (boothDistrict) {
           districtData.sort((a, b) =>
-            a.district === booth ? -1 : b.district === booth ? 1 : 0
+            a.pc === booth ? -1 : b.pc === booth ? 1 : 0
           );
         }
 
@@ -818,19 +877,19 @@ router.get(
       } else if (userRoles.length === 1 && userRoles[0] !== "user") {
         const surveyData = await Survey2.find({
           Booth: req.params.booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
         res.status(200).json({ surveys: surveyData });
       } else if (userRoles.length > 0) {
         const booth = req.params.booth;
         const districtData = [];
 
-        for (const district of userRoles) {
+        for (const pc of userRoles) {
           const surveyData = await Survey2.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
-          districtData.push({ district, surveys: surveyData });
+          districtData.push({ pc, surveys: surveyData });
         }
 
         res.status(200).json({ districts: districtData });
@@ -1021,19 +1080,19 @@ router.get(
       } else if (userRoles.length === 1 && userRoles[0] !== "user") {
         const surveyData = await Survey3.find({
           Booth: req.params.booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
         res.status(200).json({ surveys: surveyData });
       } else if (userRoles.length > 0) {
         const booth = req.params.booth;
         const districtData = [];
 
-        for (const district of userRoles) {
+        for (const pc of userRoles) {
           const surveyData = await Survey3.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
-          districtData.push({ district, surveys: surveyData });
+          districtData.push({ pc, surveys: surveyData });
         }
 
         res.status(200).json({ districts: districtData });
@@ -1194,19 +1253,19 @@ router.get(
       } else if (userRoles.length === 1 && userRoles[0] !== "user") {
         const surveyData = await Survey4.find({
           Booth: req.params.booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
         res.status(200).json({ surveys: surveyData });
       } else if (userRoles.length > 0) {
         const booth = req.params.booth;
         const districtData = [];
 
-        for (const district of userRoles) {
+        for (const pc of userRoles) {
           const surveyData = await Survey4.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
-          districtData.push({ district, surveys: surveyData });
+          districtData.push({ pc, surveys: surveyData });
         }
 
         res.status(200).json({ districts: districtData });
@@ -1367,19 +1426,19 @@ router.get(
       } else if (userRoles.length === 1 && userRoles[0] !== "user") {
         const surveyData = await Survey5.find({
           Booth: req.params.booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
         res.status(200).json({ surveys: surveyData });
       } else if (userRoles.length > 0) {
         const booth = req.params.booth;
         const districtData = [];
 
-        for (const district of userRoles) {
+        for (const pc of userRoles) {
           const surveyData = await Survey5.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
-          districtData.push({ district, surveys: surveyData });
+          districtData.push({ pc, surveys: surveyData });
         }
 
         res.status(200).json({ districts: districtData });
@@ -1540,19 +1599,19 @@ router.get(
       } else if (userRoles.length === 1 && userRoles[0] !== "user") {
         const surveyData = await Survey6.find({
           Booth: req.params.booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
         res.status(200).json({ surveys: surveyData });
       } else if (userRoles.length > 0) {
         const booth = req.params.booth;
         const districtData = [];
 
-        for (const district of userRoles) {
+        for (const pc of userRoles) {
           const surveyData = await Survey6.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
-          districtData.push({ district, surveys: surveyData });
+          districtData.push({ pc, surveys: surveyData });
         }
 
         res.status(200).json({ districts: districtData });
@@ -1686,19 +1745,19 @@ router.get(
       } else if (userRoles.length === 1 && userRoles[0] !== "user") {
         const surveyData = await Survey7.find({
           Booth: req.params.booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
         res.status(200).json({ surveys: surveyData });
       } else if (userRoles.length > 0) {
         const booth = req.params.booth;
         const districtData = [];
 
-        for (const district of userRoles) {
+        for (const pc of userRoles) {
           const surveyData = await Survey7.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
-          districtData.push({ district, surveys: surveyData });
+          districtData.push({ pc, surveys: surveyData });
         }
 
         res.status(200).json({ districts: districtData });
@@ -1832,19 +1891,19 @@ router.get(
       } else if (userRoles.length === 1 && userRoles[0] !== "user") {
         const surveyData = await Survey8.find({
           Booth: req.params.booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
         res.status(200).json({ surveys: surveyData });
       } else if (userRoles.length > 0) {
         const booth = req.params.booth;
         const districtData = [];
 
-        for (const district of userRoles) {
+        for (const pc of userRoles) {
           const surveyData = await Survey8.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
-          districtData.push({ district, surveys: surveyData });
+          districtData.push({ pc, surveys: surveyData });
         }
 
         res.status(200).json({ districts: districtData });
@@ -1978,19 +2037,19 @@ router.get(
       } else if (userRoles.length === 1 && userRoles[0] !== "user") {
         const surveyData = await Survey9.find({
           Booth: req.params.booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
         res.status(200).json({ surveys: surveyData });
       } else if (userRoles.length > 0) {
         const booth = req.params.booth;
         const districtData = [];
 
-        for (const district of userRoles) {
+        for (const pc of userRoles) {
           const surveyData = await Survey9.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
-          districtData.push({ district, surveys: surveyData });
+          districtData.push({ pc, surveys: surveyData });
         }
 
         res.status(200).json({ districts: districtData });
@@ -2123,19 +2182,19 @@ router.get(
       } else if (userRoles.length === 1 && userRoles[0] !== "user") {
         const surveyData = await Survey10.find({
           Booth: req.params.booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
         res.status(200).json({ surveys: surveyData });
       } else if (userRoles.length > 0) {
         const booth = req.params.booth;
         const districtData = [];
 
-        for (const district of userRoles) {
+        for (const pc of userRoles) {
           const surveyData = await Survey10.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
-          districtData.push({ district, surveys: surveyData });
+          districtData.push({ pc, surveys: surveyData });
         }
 
         res.status(200).json({ districts: districtData });
@@ -2265,19 +2324,19 @@ router.get(
       } else if (userRoles.length === 1 && userRoles[0] !== "user") {
         const surveyData = await Survey11.find({
           Booth: req.params.booth,
-          district: userRoles[0],
+          pc: userRoles[0],
         });
         res.status(200).json({ surveys: surveyData });
       } else if (userRoles.length > 0) {
         const booth = req.params.booth;
         const districtData = [];
 
-        for (const district of userRoles) {
+        for (const pc of userRoles) {
           const surveyData = await Survey11.find({
             Booth: booth,
-            district: district,
+            pc: pc,
           });
-          districtData.push({ district, surveys: surveyData });
+          districtData.push({ pc, surveys: surveyData });
         }
 
         res.status(200).json({ districts: districtData });
@@ -2329,4 +2388,80 @@ router.delete(
     }
   }
 );
+
+
+const SurveyModels = [
+  UrbanSurvey,
+  RuralSurvey,
+  Survey,
+  Survey2,
+  Survey3,
+  Survey4,
+  Survey5,
+  Survey6,
+  Survey7,
+  Survey8,
+  Survey9,
+  Survey10,
+  Survey11
+];
+
+router.get(
+  "/get-booths-by-constituency/:constituencyName",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      const { constituencyName } = req.params;
+      console.log("userRoles:::", userRoles);
+      console.log("constituencyName:::", constituencyName);
+
+      const boothSet = new Set(); // Using a Set to store unique values
+
+      for (const pc of userRoles) {
+        const surveyData = await fetchSurveyData(pc, constituencyName);
+        surveyData.forEach(data => {
+          boothSet.add(data.Booth); // Add each booth to the Set
+        });
+      }
+
+      // Convert Set back to array, extract numeric part, and sort numerically
+      const Booth = Array.from(boothSet).sort((a, b) => {
+        const numA = parseInt(a.match(/\d+/)[0]);
+        const numB = parseInt(b.match(/\d+/)[0]);
+        return numA - numB;
+      });
+
+      // Calculate the total booth count
+      const totalBoothCount = Booth.length;
+
+      res.status(200).json({ booths: Booth, totalBoothCount });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+async function fetchSurveyData(pc, constituencyName) {
+  const Booth = [];
+
+  for (const SurveyModel of SurveyModels) {
+    try {
+      const surveyData = await SurveyModel.find({
+        constituencyName: constituencyName,
+        pc: pc,
+      });
+      Booth.push(...surveyData);
+    } catch (error) {
+      console.error(`Error fetching survey data for PC ${pc} and constituency ${constituencyName}:`, error);
+    }
+  }
+
+  return Booth;
+}
+
+
+
+
+
 module.exports = router;

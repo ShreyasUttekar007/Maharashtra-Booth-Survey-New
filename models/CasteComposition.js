@@ -27,6 +27,11 @@ const surveySchema11 = new Schema(
       required: [true, "Please select a District"],
       trim: true,
     },
+    pc: {
+      type: String,
+      required: [true, "Please select a pc"],
+      trim: true,
+    },
     constituencyName: {
       type: String,
       required: [true, "Please select a Constituency"],
