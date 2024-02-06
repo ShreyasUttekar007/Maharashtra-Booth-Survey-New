@@ -2478,6 +2478,37 @@ async function fetchSurveyData(pc, constituencyName) {
   return Booth;
 }
 
+router.get(
+  "/get-constituencies-by-pc/:pc",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const { pc } = req.params;
+      console.log("pc:::", pc);
+
+      const constituencyNames = [];
+
+      for (const SurveyModel of SurveyModels) {
+        const surveyData = await SurveyModel.find({ pc });
+        if (surveyData) {
+          surveyData.forEach(data => {
+            constituencyNames.push(data.constituencyName);
+          });
+        }
+      }
+
+      if (constituencyNames.length > 0) {
+        const uniqueConstituencyNames = Array.from(new Set(constituencyNames));
+        res.status(200).json({ constituencyNames: uniqueConstituencyNames });
+      } else {
+        res.status(404).json({ message: "No constituencies found for the provided PC." });
+      }
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 
 
 
