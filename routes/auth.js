@@ -2416,23 +2416,26 @@ router.get(
       console.log("userRoles:::", userRoles);
       console.log("constituencyName:::", constituencyName);
 
-      const boothSet = new Set(); // Using a Set to store unique values
+      const boothSet = new Set(); 
 
-      for (const pc of userRoles) {
-        const surveyData = await fetchSurveyData(pc, constituencyName);
-        surveyData.forEach(data => {
-          boothSet.add(data.Booth); // Add each booth to the Set
-        });
+      if (userRoles.includes("admin") || userRoles.includes("mod")) {
+        const allPcs = await fetchAllPcs(constituencyName);
+        allPcs.forEach(pc => boothSet.add(pc.Booth));
+      } else {
+        for (const pc of userRoles) {
+          const surveyData = await fetchSurveyData(pc, constituencyName);
+          surveyData.forEach(data => {
+            boothSet.add(data.Booth); 
+          });
+        }
       }
 
-      // Convert Set back to array, extract numeric part, and sort numerically
       const Booth = Array.from(boothSet).sort((a, b) => {
         const numA = parseInt(a.match(/\d+/)[0]);
         const numB = parseInt(b.match(/\d+/)[0]);
         return numA - numB;
       });
 
-      // Calculate the total booth count
       const totalBoothCount = Booth.length;
 
       res.status(200).json({ booths: Booth, totalBoothCount });
@@ -2442,14 +2445,29 @@ router.get(
   }
 );
 
+async function fetchAllPcs(constituencyName) {
+  const allPcs = [];
+
+  for (const SurveyModel of SurveyModels) {
+    try {
+      const surveyData = await SurveyModel.find({ constituencyName });
+      allPcs.push(...surveyData);
+    } catch (error) {
+      console.error(`Error fetching survey data for constituency ${constituencyName}:`, error);
+    }
+  }
+
+  return allPcs;
+}
+
 async function fetchSurveyData(pc, constituencyName) {
   const Booth = [];
 
   for (const SurveyModel of SurveyModels) {
     try {
       const surveyData = await SurveyModel.find({
-        constituencyName: constituencyName,
-        pc: pc,
+        constituencyName,
+        pc,
       });
       Booth.push(...surveyData);
     } catch (error) {
