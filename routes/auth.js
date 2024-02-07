@@ -141,29 +141,30 @@ router.get("/district-names", authenticateToken, async (req, res, next) => {
 });
 
 router.get(
-  "/get-districts-with-count",
+  "/get-pc-with-count",
   authenticateToken,
   async (req, res, next) => {
     try {
       const userId = req.user.userId;
-      const districts = await Booth.aggregate([
+      const pc = await Booth.aggregate([
         { $match: { userId: userId } },
-        { $group: { _id: "$district", count: { $sum: 1 } } },
+        { $group: { _id: "$pc", count: { $sum: 1 } } },
         { $project: { _id: 1, count: 1 } },
       ]);
 
-      const totalDistricts = districts.length;
-      const totalCount = districts.reduce(
-        (total, district) => total + district.count,
+      const totalConstituencies = pc.length;
+      const totalCount = pc.reduce(
+        (total, constituency) => total + constituency.count,
         0
       );
 
-      res.status(200).json({ districts, totalDistricts, totalCount });
+      res.status(200).json({ pc, totalConstituencies, totalCount });
     } catch (error) {
       next(error);
     }
   }
 );
+
 
 router.get("/get-pcs-with-count", authenticateToken, async (req, res, next) => {
   try {
@@ -310,21 +311,120 @@ router.get("/combined-counts", async (req, res, next) => {
   }
 });
 
+router.get("/combined-counts-by-pc", async (req, res, next) => {
+  try {
+    // Aggregate booth counts by PC and constituencyName
+    const boothCountsByPC = await Booth.aggregate([
+      {
+        $group: {
+          _id: {
+            pc: "$pc",
+            constituencyName: "$constituencyName"
+          },
+          totalBooths: { $sum: 1 },
+        },
+      },
+    ]);
+
+    // Aggregate survey counts by PC and constituencyName
+    const surveyCountsByPC = await Survey.aggregate([
+      {
+        $group: {
+          _id: {
+            pc: "$pc",
+            constituencyName: "$constituencyName"
+          },
+          completedBooths: { $sum: 1 },
+        },
+      },
+    ]);
+
+    // Combine booth and survey counts for each PC and constituencyName
+    const pcData = boothCountsByPC.map((boothPC) => {
+      const surveyPC = surveyCountsByPC.find(
+        (s) => s._id.pc === boothPC._id.pc && s._id.constituencyName === boothPC._id.constituencyName
+      );
+
+      return {
+        pc: boothPC._id.pc,
+        constituencyName: boothPC._id.constituencyName,
+        totalBooths: boothPC.totalBooths,
+        completedBooths: surveyPC ? surveyPC.completedBooths : 0,
+      };
+    });
+
+    // Group pcData by PC and calculate total and completed booths
+    const pcDataGroupedByPC = pcData.reduce((acc, curr) => {
+      const existingIndex = acc.findIndex(item => item.pc === curr.pc);
+      if (existingIndex !== -1) {
+        acc[existingIndex].constituencies.push({
+          constituencyName: curr.constituencyName,
+          totalBooths: curr.totalBooths,
+          completedBooths: curr.completedBooths
+        });
+        acc[existingIndex].totalBooths += curr.totalBooths;
+        acc[existingIndex].completedBooths += curr.completedBooths;
+      } else {
+        acc.push({
+          pc: curr.pc,
+          constituencies: [{
+            constituencyName: curr.constituencyName,
+            totalBooths: curr.totalBooths,
+            completedBooths: curr.completedBooths
+          }],
+          totalBooths: curr.totalBooths,
+          completedBooths: curr.completedBooths
+        });
+      }
+      return acc;
+    }, []);
+
+    // Calculate totals
+    const totalPCs = pcDataGroupedByPC.length;
+    const totalBooths = pcData.reduce(
+      (total, pc) => total + pc.totalBooths,
+      0
+    );
+    const totalCompletedBooths = pcData.reduce(
+      (total, pc) => total + pc.completedBooths,
+      0
+    );
+
+    const combinedCounts = {
+      pcData: pcDataGroupedByPC,
+      totals: {
+        totalPCs,
+        totalBooths,
+        totalCompletedBooths,
+      },
+    };
+
+    res.status(200).json(combinedCounts);
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+
+
+
+
 router.get(
-  "/combined-counts-by-constituency/:district",
+  "/combined-counts-by-constituency/:pc",
   async (req, res, next) => {
     try {
-      const { district } = req.params;
+      const { pc } = req.params;
 
-      if (!district) {
+      if (!pc) {
         return res
           .status(400)
-          .json({ error: "District parameter is required" });
+          .json({ error: "Parliamentary Constituency parameter is required" });
       }
 
       const boothCountsByConstituency = await Booth.aggregate([
         {
-          $match: { district: district },
+          $match: { pc: pc },
         },
         {
           $group: {
@@ -336,7 +436,7 @@ router.get(
 
       const surveyCountsByConstituency = await Survey.aggregate([
         {
-          $match: { district: district },
+          $match: { pc: pc },
         },
         {
           $group: {
@@ -387,6 +487,48 @@ router.get(
     }
   }
 );
+
+
+router.get(
+  "/fetch-booths-by-constituency/:constituencyName",
+  async (req, res, next) => {
+    try {
+      const { constituencyName } = req.params;
+
+      if (!constituencyName) {
+        return res
+          .status(400)
+          .json({ error: "Constituency Name parameter is required" });
+      }
+
+      const boothCountsByConstituency = await Booth.aggregate([
+        {
+          $match: { constituencyName: constituencyName },
+        },
+        {
+          $group: {
+            _id: null,
+            totalBooths: { $sum: 1 },
+          },
+        },
+      ]);
+      console.log('boothCountsByConstituency::: ', boothCountsByConstituency);
+
+      const totalBooths = boothCountsByConstituency.length > 0 ? boothCountsByConstituency[0].totalBooths : 0;
+      console.log('totalBooths::: ', totalBooths);
+
+      const result = {
+        constituencyName,
+        totalBooths
+      };
+
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 
 router.get("/survey-count-by-district", async (req, res, next) => {
   try {
