@@ -15,6 +15,8 @@ const Survey9 = require("../models/AdministrativeIssues");
 const Survey10 = require("../models/SuggestionOrComplaints");
 const Survey11 = require("../models/CasteComposition");
 const { UrbanSurvey, RuralSurvey } = require("../models/Locality");
+const AcRetro = require("../models/AcRetro");
+const PcRetro = require("../models/PcRetro");
 
 const router = express.Router();
 
@@ -2545,7 +2547,9 @@ const SurveyModels = [
   Survey8,
   Survey9,
   Survey10,
-  Survey11
+  AcRetro,
+  PcRetro,
+  Survey11,
 ];
 
 router.get(
@@ -2651,8 +2655,90 @@ router.get(
   }
 );
 
+router.get(
+  "/get-acretro-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
 
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await AcRetro.find({ Booth: req.params.booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await AcRetro.find({
+          Booth: req.params.booth,
+          pc: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
 
+        for (const pc of userRoles) {
+          const surveyData = await AcRetro.find({
+            Booth: booth,
+            pc: pc,
+          });
+          districtData.push({ pc, surveys: surveyData });
+        }
 
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
+      }
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  "/get-pcretro-by-booth/:booth",
+  authenticateToken,
+  async (req, res, next) => {
+    try {
+      const userRoles = req.user?.roles || [];
+      console.log("userRoles::: ", userRoles);
+
+      if (
+        userRoles.includes("admin") ||
+        userRoles.includes("mod") ||
+        userRoles.includes("user")
+      ) {
+        const surveyData = await PcRetro.find({ Booth: req.params.booth });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length === 1 && userRoles[0] !== "user") {
+        const surveyData = await PcRetro.find({
+          Booth: req.params.booth,
+          pc: userRoles[0],
+        });
+        res.status(200).json({ surveys: surveyData });
+      } else if (userRoles.length > 0) {
+        const booth = req.params.booth;
+        const districtData = [];
+
+        for (const pc of userRoles) {
+          const surveyData = await PcRetro.find({
+            Booth: booth,
+            pc: pc,
+          });
+          districtData.push({ pc, surveys: surveyData });
+        }
+
+        res.status(200).json({ districts: districtData });
+      } else {
+        res.status(403).json({ error: "User roles not available" });
+      }
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 module.exports = router;
